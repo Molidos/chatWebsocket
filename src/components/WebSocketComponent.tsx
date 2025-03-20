@@ -9,7 +9,7 @@ interface WebSocketComponentProps {
 }
 
 interface Message {
-  text: string;
+  value: {user:string, message:string};
   isOwnMessage: boolean;
   timestamp: string;
 }
@@ -27,6 +27,9 @@ const WebSocketComponent: React.FC<WebSocketComponentProps> = ({ wsUrl, onDiscon
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+
+
+  console.log(messages)
 
   const clearReconnectTimeout = () => {
     if (reconnectTimeoutRef.current) {
@@ -57,12 +60,17 @@ const WebSocketComponent: React.FC<WebSocketComponentProps> = ({ wsUrl, onDiscon
       };
 
       socket.onmessage = (event) => {
-        const newMessage: Message = {
-          text: event.data,
-          isOwnMessage: false,
-          timestamp: new Date().toLocaleTimeString()
-        };
-        setMessages((prev) => [...prev, newMessage]);
+        try {
+          const data = JSON.parse(event.data);
+          const newMessage: Message = {
+            value: data,
+            isOwnMessage: false,
+            timestamp: new Date().toLocaleTimeString()
+          };
+          setMessages((prev) => [...prev, newMessage]);
+        } catch (error) {
+          console.error("Erro ao processar mensagem recebida:", error);
+        }
       };
 
       socket.onerror = (error) => {
@@ -135,12 +143,19 @@ const WebSocketComponent: React.FC<WebSocketComponentProps> = ({ wsUrl, onDiscon
   const sendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (ws && input.trim() && isConnected) {
+      const messageData = {
+        user: "midoria",
+        message: input
+      };
+
       const newMessage: Message = {
-        text: input,
+        value: messageData,
         isOwnMessage: true,
         timestamp: new Date().toLocaleTimeString()
       };
-      ws.send(input);
+
+      // Converte o objeto para string antes de enviar
+      ws.send(JSON.stringify(messageData));
       setMessages((prev) => [...prev, newMessage]);
       setInput("");
     }
@@ -181,7 +196,7 @@ const WebSocketComponent: React.FC<WebSocketComponentProps> = ({ wsUrl, onDiscon
           {messages.map((msg, index) => (
             <ChatMessage
               key={index}
-              message={msg.text}
+              message={msg.value}
               isOwnMessage={msg.isOwnMessage}
               timestamp={msg.timestamp}
             />
