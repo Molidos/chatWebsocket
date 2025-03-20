@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import ChatMessage from "./ChatMessage";
 
-const WS_URL = "wss://5ce0-34-105-7-71.ngrok-free.app"; // ⚠️ Substitua pela URL do seu ngrok
+interface WebSocketComponentProps {
+  wsUrl: string;
+  onDisconnect: () => void;
+}
 
 interface Message {
   text: string;
@@ -11,50 +14,123 @@ interface Message {
   timestamp: string;
 }
 
-const WebSocketComponent: React.FC = () => {
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_INTERVAL = 3000; // 3 segundos
+
+const WebSocketComponent: React.FC<WebSocketComponentProps> = ({ wsUrl, onDisconnect }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState<string>("");
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [reconnectAttempts, setReconnectAttempts] = useState(0);
+  const [connectionError, setConnectionError] = useState<string>("");
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  const clearReconnectTimeout = () => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+  };
+
+  const connectWebSocket = useCallback(() => {
+    // Limpa qualquer conexão existente
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    clearReconnectTimeout();
+
+    try {
+      const socket = new WebSocket(wsUrl);
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        console.log("🔗 Conectado ao WebSocket");
+        setIsConnected(true);
+        setConnectionError("");
+        setReconnectAttempts(0);
+        setWs(socket);
+      };
+
+      socket.onmessage = (event) => {
+        const newMessage: Message = {
+          text: event.data,
+          isOwnMessage: false,
+          timestamp: new Date().toLocaleTimeString()
+        };
+        setMessages((prev) => [...prev, newMessage]);
+      };
+
+      socket.onerror = (error) => {
+        console.error("❌ Erro no WebSocket:", error);
+        if (wsRef.current === socket) {
+          setIsConnected(false);
+          setConnectionError("Erro na conexão com o servidor");
+        }
+      };
+
+      socket.onclose = (event) => {
+        console.log("🔴 WebSocket desconectado", event.code, event.reason);
+        
+        if (wsRef.current !== socket) {
+          return; // Ignora eventos de conexões antigas
+        }
+
+        setIsConnected(false);
+        setWs(null);
+        
+        // Tenta reconectar apenas se não foi um fechamento limpo
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS && event.code !== 1000) {
+          setConnectionError(`Tentando reconectar... (Tentativa ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+          reconnectTimeoutRef.current = setTimeout(() => {
+            setReconnectAttempts(prev => prev + 1);
+            connectWebSocket();
+          }, RECONNECT_INTERVAL);
+        } else {
+          setConnectionError("Não foi possível estabelecer conexão com o servidor");
+          onDisconnect();
+        }
+      };
+
+      return socket;
+    } catch (error) {
+      console.error("Erro ao criar WebSocket:", error);
+      setConnectionError("Erro ao criar conexão com o servidor");
+      return null;
+    }
+  }, [wsUrl, reconnectAttempts, onDisconnect]);
 
   useEffect(() => {
-    const socket = new WebSocket(WS_URL);
+    connectWebSocket();
 
-    socket.onopen = () => {
-      console.log("🔗 Conectado ao WebSocket");
-      setIsConnected(true);
+    return () => {
+      clearReconnectTimeout();
+      if (wsRef.current) {
+        wsRef.current.close(1000, "Desconexão normal");
+        wsRef.current = null;
+      }
     };
-
-    socket.onmessage = (event) => {
-      const newMessage: Message = {
-        text: event.data,
-        isOwnMessage: false,
-        timestamp: new Date().toLocaleTimeString()
-      };
-      setMessages((prev) => [...prev, newMessage]);
-    };
-
-    socket.onerror = (error) => {
-      console.error("❌ Erro no WebSocket:", error);
-      setIsConnected(false);
-    };
-
-    socket.onclose = () => {
-      console.log("🔴 WebSocket desconectado");
-      setIsConnected(false);
-    };
-
-    setWs(socket);
-
-    return () => socket.close();
-  }, []);
+  }, [connectWebSocket]);
 
   useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [messages]);
+
+  const handleDisconnect = () => {
+    clearReconnectTimeout();
+    setReconnectAttempts(MAX_RECONNECT_ATTEMPTS); // Impede novas tentativas de reconexão
+    if (wsRef.current) {
+      wsRef.current.close(1000, "Desconexão manual");
+      wsRef.current = null;
+    }
+    onDisconnect();
+  };
 
   const sendMessage = (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,12 +151,27 @@ const WebSocketComponent: React.FC = () => {
       <div className="bg-white rounded-lg shadow-lg h-full flex flex-col">
         {/* Header */}
         <div className="p-4 border-b flex items-center justify-between bg-gray-50 rounded-t-lg">
-          <h2 className="text-xl font-bold text-gray-800">WebSocket Chat</h2>
+          <div className="flex items-center space-x-4">
+            <h2 className="text-xl font-bold text-gray-800">WebSocket Chat</h2>
+            <button
+              onClick={handleDisconnect}
+              className="text-sm text-red-500 hover:text-red-600 transition-colors"
+            >
+              Desconectar
+            </button>
+          </div>
           <div className="flex items-center">
             <span className={`w-3 h-3 rounded-full mr-2 ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></span>
             <span className="text-sm text-gray-600">{isConnected ? 'Conectado' : 'Desconectado'}</span>
           </div>
         </div>
+
+        {/* Connection Error Message */}
+        {connectionError && (
+          <div className="bg-red-50 p-3 text-center">
+            <p className="text-sm text-red-600">{connectionError}</p>
+          </div>
+        )}
 
         {/* Messages Container */}
         <div 
